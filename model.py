@@ -268,3 +268,137 @@ def shift_inputs_and_labels(input_ids):
     x = input_ids[:, :-1]
     y = input_ids[:, 1:]
     return x, y
+
+class MoELayer(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+        self.d_model = config.d_model
+        self.n_experts = config.n_experts
+        self.n_active_experts = config.n_active_experts
+        self.dropout = config.dropout
+
+        hidden_dim = getattr(config, "moe_expert_hidden_dim", getattr(config, "d_ff"))
+
+        self.router = nn.Linear(self.d_model, self.n_experts, bias=False)
+        self.experts = nn.ModuleList([
+            SwiGLUFeedForward(self.d_model, hidden_dim, dropout=self.dropout)
+            for _ in range(self.n_experts)
+        ])
+
+    def forward(self, x):
+        bsz, seq_len, d_model = x.shape
+        assert d_model == self.d_model
+
+        router_logits = self.router(x)                          
+        router_probs = F.softmax(router_logits, dim=-1)       
+
+        # top-k experts per token
+        topk_probs, topk_idx = torch.topk(
+            router_probs, k=self.n_active_experts, dim=-1
+        )                                                    
+
+        importance = router_probs.mean(dim=(0, 1))             
+
+        with torch.no_grad():
+            load = torch.zeros(self.n_experts, device=x.device, dtype=x.dtype)
+            flat_idx = topk_idx.reshape(-1)                     
+            load.scatter_add_(
+                0,
+                flat_idx,
+                torch.ones_like(flat_idx, dtype=x.dtype)
+            )
+            load = load / flat_idx.numel()
+
+        aux_loss = self.n_experts * torch.sum(importance * load)
+
+        flat_x = x.reshape(bsz * seq_len, d_model)             
+        flat_topk_idx = topk_idx.reshape(-1, self.n_active_experts)
+        flat_topk_probs = topk_probs.reshape(-1, self.n_active_experts)
+
+        output = torch.zeros_like(flat_x)
+
+        for expert_id in range(self.n_experts):
+            expert_mask = (flat_topk_idx == expert_id)         
+            if not expert_mask.any():
+                continue
+
+            token_mask = expert_mask.any(dim=-1)               
+            token_positions = token_mask.nonzero(as_tuple=True)[0]
+
+            expert_input = flat_x[token_positions]              
+            expert_output = self.experts[expert_id](expert_input) 
+
+            weights = (flat_topk_probs[token_positions] * expert_mask[token_positions].to(flat_topk_probs.dtype)).sum(dim=-1)
+            output[token_positions] += expert_output * weights.unsqueeze(-1)
+
+        output = output.view(bsz, seq_len, d_model)
+        return output, aux_loss
+    
+class MoETransformerBlock(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+        self.norm1 = nn.RMSNorm(config.d_model, eps=config.rms_norm_eps)
+        self.norm2 = nn.RMSNorm(config.d_model, eps=config.rms_norm_eps)
+
+        self.attention = GroupedQueryAttention(config)
+        self.moe = MoELayer(config)
+
+        self.dropout = nn.Dropout(config.dropout)
+
+    def forward(self, x):
+        attn_out = self.attention(self.norm1(x))
+        x = x + self.dropout(attn_out)
+
+        moe_out, aux_loss = self.moe(self.norm2(x))
+        x = x + self.dropout(moe_out)
+
+        return x, aux_loss
+    
+class Qwen3MOELM(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+        self.config = config
+
+        self.token_embedding = nn.Embedding(config.vocab_size, config.d_model)
+
+        self.layers = nn.ModuleList([
+            MoETransformerBlock(config)
+            for _ in range(config.n_layers)
+        ])
+
+        self.final_norm = nn.RMSNorm(config.d_model, eps=config.rms_norm_eps)
+        self.lm_head = nn.Linear(config.d_model, config.vocab_size, bias=False)
+
+        self.dropout = nn.Dropout(config.dropout)
+
+        if getattr(config, "tie_embeddings", False):
+            self.lm_head.weight = self.token_embedding.weight
+
+        self.aux_loss_coef = getattr(config, "moe_aux_loss_coef", 0.01)
+
+    def forward(self, input_ids, labels=None):
+        x = self.token_embedding(input_ids)
+        x = self.dropout(x)
+
+        total_aux_loss = 0.0
+
+        for layer in self.layers:
+            x, aux_loss = layer(x)
+            total_aux_loss = total_aux_loss + aux_loss
+
+        x = self.final_norm(x)
+        logits = self.lm_head(x)
+
+        loss = None
+        if labels is not None:
+            lm_loss = F.cross_entropy(
+                logits.reshape(-1, logits.size(-1)),
+                labels.reshape(-1)
+            )
+            loss = lm_loss + self.aux_loss_coef * total_aux_loss
+
+        return {
+            "logits": logits,
+            "loss": loss,
+            "aux_loss": total_aux_loss
+        }
