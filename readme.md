@@ -6,15 +6,15 @@ The implementations are a scaled-down version inspired by the Qwen3-1.7B dense m
 
 ## Implemented Components
 
-* Token Embeddings
-* Rotary Positional Embeddings (RoPE)
-* Grouped Query Attention (GQA)
-* RMSNorm
-* SwiGLU Feed Forward Network
-* Causal Self Attention
-* Residual Connections
-* Weight Tied LM Head
-* Decoder-only Causal Language Modeling
+- Token Embeddings
+- Rotary Positional Embeddings (RoPE)
+- Grouped Query Attention (GQA)
+- RMSNorm
+- SwiGLU Feed Forward Network
+- Causal Self Attention
+- Residual Connections
+- Weight Tied LM Head
+- Decoder-only Causal Language Modeling
 
 ---
 
@@ -55,9 +55,9 @@ Context Length: 128K
 
 The MoE implementation includes:
 
-* Router / Gating Network
-* Top-k Expert Routing
-* Sparse Expert Activation
-* Expert SwiGLU FFNs
-* Auxiliary Load Balancing Loss
+- Router / Gating Network
+- Top-k Expert Routing
+- Sparse Expert Activation
+- Expert SwiGLU FFNs
+- Auxiliary Load Balancing Loss
 
