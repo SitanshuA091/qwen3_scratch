@@ -1,6 +1,6 @@
 import os
 import argparse
-from typing import Dict, List
+from typing import Dict, Tuple, List, Optional
 
 import torch
 from torch.utils.data import Dataset, DataLoader
@@ -70,6 +70,18 @@ def parse_args():
     )
 
     parser.add_argument(
+        "--val_split_ratio",
+        type=float,
+        default=0.1
+    )
+
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=42
+    )
+
+    parser.add_argument(
         "--num_workers",
         type=int,
         default=0
@@ -77,96 +89,114 @@ def parse_args():
 
     return parser.parse_args()
 
-def pick_text_fields(sample: Dict) -> List[str]:
-    """
-    Try to infer text fields from the dataset sample.
-    Works for QnA-style datasets and also generic text datasets.
-    """
-    common_question_keys = ["question", "prompt", "instruction", "query", "input"]
-    common_answer_keys = ["answer", "response", "output", "completion", "target"]
 
-    question = None
-    answer = None
-
-    for key in common_question_keys:
-        if key in sample and sample[key] is not None:
-            question = str(sample[key]).strip()
-            break
-
-    for key in common_answer_keys:
-        if key in sample and sample[key] is not None:
-            answer = str(sample[key]).strip()
-            break
-
-    if question and answer:
-        return [f"Question: {question}\nAnswer: {answer}"]
-
-    if "text" in sample and sample["text"] is not None:
-        return [str(sample["text"]).strip()]
-
-    # fallback: join all string-like fields
-    parts = []
-    for k, v in sample.items():
-        if isinstance(v, str) and v.strip():
-            parts.append(f"{k}: {v.strip()}")
-
-    if parts:
-        return ["\n".join(parts)]
-
-    return [""]
+def set_seed(seed: int = 42):
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
 
 
-class HuggingFaceTextDataset(Dataset):
-    def __init__(self, hf_dataset, tokenizer, max_seq_len):
-        self.dataset = hf_dataset
-        self.tokenizer = tokenizer
-        self.max_seq_len = max_seq_len
+def pick_text_fields(sample: Dict) -> Tuple[str, str]:
+    instruction = str(sample.get("instruction", "")).strip()
+    user_input = str(sample.get("input", "")).strip()
+    output = str(sample.get("output", "")).strip()
 
-    def __len__(self):
-        return len(self.dataset)
+    if not instruction or not output:
+        return "", ""
 
-    def __getitem__(self, idx):
-        sample = self.dataset[idx]
-        texts = pick_text_fields(sample)
-        text = texts[0]
-
-        enc = self.tokenizer(
-            text,
-            truncation=True,
-            max_length=self.max_seq_len,
-            padding="max_length",
-            return_tensors="pt"
+    if user_input:
+        prompt = (
+            f"### Instruction:\n{instruction}\n\n"
+            f"### Input:\n{user_input}\n\n"
+            f"### Response:\n"
+        )
+    else:
+        prompt = (
+            f"### Instruction:\n{instruction}\n\n"
+            f"### Response:\n"
         )
 
-        input_ids = enc["input_ids"].squeeze(0)
-        attention_mask = enc["attention_mask"].squeeze(0)
+    return prompt, output
 
-        return {
-            "input_ids": input_ids,
-            "attention_mask": attention_mask,
-            "labels": input_ids.clone()
-        }
+class QnADataset(Dataset):
+    def __init__(self, hf_dataset):
+        self.examples = []
+
+        for sample in hf_dataset:
+            prompt, response = pick_text_fields(sample)
+            if prompt and response:
+                self.examples.append(
+                    {
+                        "prompt": prompt,
+                        "response": response
+                    }
+                )
+
+    def __len__(self):
+        return len(self.examples)
+
+    def __getitem__(self, idx):
+        return self.examples[idx]
 
 
-# ============================================================
-# MODEL BUILDER
-# ============================================================
+def collate_fn(batch, tokenizer, max_seq_len):
+    prompts = [item["prompt"] for item in batch]
+    responses = [item["response"] for item in batch]
 
+    eos = tokenizer.eos_token if tokenizer.eos_token is not None else ""
+
+    full_texts = [
+        prompt + response + eos
+        for prompt, response in zip(prompts, responses)
+    ]
+
+    full_enc = tokenizer(
+        full_texts,
+        truncation=True,
+        max_length=max_seq_len,
+        padding="max_length",
+        return_tensors="pt"
+    )
+
+    prompt_enc = tokenizer(
+        prompts,
+        truncation=True,
+        max_length=max_seq_len,
+        padding="max_length",
+        return_tensors="pt"
+    )
+
+    input_ids = full_enc["input_ids"]
+    attention_mask = full_enc["attention_mask"]
+    labels = input_ids.clone()
+
+    prompt_lengths = prompt_enc["attention_mask"].sum(dim=1)
+
+    for i, prompt_len in enumerate(prompt_lengths):
+        labels[i, :prompt_len] = -100
+
+    labels[attention_mask == 0] = -100
+
+    return {
+        "input_ids": input_ids,
+        "attention_mask": attention_mask,
+        "labels": labels
+    }
+    
 def build_model(model_type: str, config: Config):
     if model_type == "dense":
         return Qwen3DenseLM(config)
-    if model_type == "moe":
+    elif model_type == "moe":
         return Qwen3MOELM(config)
-    raise ValueError(f"Unknown model type: {model_type}")
+    else:
+        raise ValueError(f"Unknown model type: {model_type}")
 
 
-# ============================================================
-# TRAINING
-# ============================================================
-
-def train_one_epoch(model, dataloader, optimizer, device, scaler=None):
+def train_one_epoch(model, dataloader, optimizer, device, scaler=None, grad_clip=1.0):
     model.train()
     total_loss = 0.0
+    total_aux = 0.0
 
     progress_bar = tqdm(dataloader, desc="Training", leave=False)
 
@@ -182,24 +212,32 @@ def train_one_epoch(model, dataloader, optimizer, device, scaler=None):
                 loss = outputs["loss"]
 
             scaler.scale(loss).backward()
+            scaler.unscale_(optimizer)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
             scaler.step(optimizer)
             scaler.update()
         else:
             outputs = model(input_ids=input_ids, labels=labels)
             loss = outputs["loss"]
             loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
             optimizer.step()
 
         total_loss += loss.item()
+        total_aux += float(outputs.get("aux_loss", 0.0))
+
         progress_bar.set_postfix(loss=f"{loss.item():.4f}")
 
-    return total_loss / max(1, len(dataloader))
+    avg_loss = total_loss / max(1, len(dataloader))
+    avg_aux = total_aux / max(1, len(dataloader))
+    return avg_loss, avg_aux
 
 
 @torch.no_grad()
 def evaluate(model, dataloader, device, scaler=None):
     model.eval()
     total_loss = 0.0
+    total_aux = 0.0
 
     for batch in tqdm(dataloader, desc="Validation", leave=False):
         input_ids = batch["input_ids"].to(device)
@@ -214,73 +252,66 @@ def evaluate(model, dataloader, device, scaler=None):
             loss = outputs["loss"]
 
         total_loss += loss.item()
+        total_aux += float(outputs.get("aux_loss", 0.0))
 
-    return total_loss / max(1, len(dataloader))
-
-
-# ============================================================
-# MAIN
-# ============================================================
+    avg_loss = total_loss / max(1, len(dataloader))
+    avg_aux = total_aux / max(1, len(dataloader))
+    return avg_loss, avg_aux
 
 def main():
     args = parse_args()
+    set_seed(args.seed)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     os.makedirs(args.save_dir, exist_ok=True)
 
     print("Loading tokenizer...")
     tokenizer = AutoTokenizer.from_pretrained(args.tokenizer)
+
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
     print("Loading dataset...")
-    dataset = load_dataset(args.dataset)
+    raw_dataset = load_dataset(args.dataset)
 
-    if "train" in dataset:
-        train_split = dataset["train"]
-    else:
-        first_split = list(dataset.keys())[0]
-        train_split = dataset[first_split]
+    if "train" not in raw_dataset:
+        raise ValueError("This script expects a train split in the dataset.")
 
-    if "validation" in dataset:
-        val_split = dataset["validation"]
-    elif "valid" in dataset:
-        val_split = dataset["valid"]
-    elif "test" in dataset:
-        val_split = dataset["test"]
-    else:
-        val_split = None
+    full_train_split = raw_dataset["train"]
+
+    if len(full_train_split) < 2:
+        raise ValueError("Dataset too small to split into train/val.")
+
+    split = full_train_split.train_test_split(
+        test_size=args.val_split_ratio,
+        seed=args.seed
+    )
+
+    train_split = split["train"]
+    val_split = split["test"]
 
     config = Config()
     config.max_seq_len = args.max_seq_len
     config.vocab_size = tokenizer.vocab_size
 
-    train_dataset = HuggingFaceTextDataset(
-        train_split,
-        tokenizer,
-        config.max_seq_len
-    )
+    train_dataset = QnADataset(train_split)
+    val_dataset = QnADataset(val_split)
 
     train_loader = DataLoader(
         train_dataset,
         batch_size=args.batch_size,
         shuffle=True,
-        num_workers=args.num_workers
+        num_workers=args.num_workers,
+        collate_fn=lambda batch: collate_fn(batch, tokenizer, config.max_seq_len)
     )
 
-    val_loader = None
-    if val_split is not None:
-        val_dataset = HuggingFaceTextDataset(
-            val_split,
-            tokenizer,
-            config.max_seq_len
-        )
-        val_loader = DataLoader(
-            val_dataset,
-            batch_size=args.batch_size,
-            shuffle=False,
-            num_workers=args.num_workers
-        )
+    val_loader = DataLoader(
+        val_dataset,
+        batch_size=args.batch_size,
+        shuffle=False,
+        num_workers=args.num_workers,
+        collate_fn=lambda batch: collate_fn(batch, tokenizer, config.max_seq_len)
+    )
 
     print(f"Building {args.model} model...")
     model = build_model(args.model, config).to(device)
@@ -297,53 +328,59 @@ def main():
     best_val_loss = float("inf")
 
     for epoch in range(args.epochs):
-        train_loss = train_one_epoch(
+        train_loss, train_aux = train_one_epoch(
             model=model,
             dataloader=train_loader,
             optimizer=optimizer,
             device=device,
+            scaler=scaler,
+            grad_clip=1.0
+        )
+
+        val_loss, val_aux = evaluate(
+            model=model,
+            dataloader=val_loader,
+            device=device,
             scaler=scaler
         )
 
-        print(f"Epoch {epoch + 1}/{args.epochs} | train loss: {train_loss:.4f}")
+        print(
+            f"Epoch {epoch + 1}/{args.epochs} | "
+            f"train_loss: {train_loss:.4f} | "
+            f"val_loss: {val_loss:.4f} | "
+            f"train_aux: {train_aux:.4f} | "
+            f"val_aux: {val_aux:.4f}"
+        )
 
-        if val_loader is not None:
-            val_loss = evaluate(
-                model=model,
-                dataloader=val_loader,
-                device=device,
-                scaler=scaler
-            )
-            print(f"Epoch {epoch + 1}/{args.epochs} | val loss: {val_loss:.4f}")
-
-            if val_loss < best_val_loss:
-                best_val_loss = val_loss
-                save_path = os.path.join(args.save_dir, f"best_{args.model}.pt")
-                torch.save(
-                    {
-                        "model_state_dict": model.state_dict(),
-                        "config": config,
-                        "model_type": args.model,
-                        "tokenizer": args.tokenizer,
-                    },
-                    save_path
-                )
-                print(f"Saved best checkpoint -> {save_path}")
-        else:
-            save_path = os.path.join(args.save_dir, f"epoch_{epoch + 1}_{args.model}.pt")
+        if val_loss < best_val_loss:
+            best_val_loss = val_loss
+            save_path = os.path.join(args.save_dir, f"best_{args.model}.pt")
             torch.save(
                 {
                     "model_state_dict": model.state_dict(),
                     "config": config,
                     "model_type": args.model,
                     "tokenizer": args.tokenizer,
+                    "epoch": epoch + 1,
+                    "val_loss": val_loss
                 },
                 save_path
             )
-            print(f"Saved checkpoint -> {save_path}")
+            print(f"Saved best checkpoint -> {save_path}")
 
+    final_path = os.path.join(args.save_dir, f"final_{args.model}.pt")
+    torch.save(
+        {
+            "model_state_dict": model.state_dict(),
+            "config": config,
+            "model_type": args.model,
+            "tokenizer": args.tokenizer,
+            "best_val_loss": best_val_loss
+        },
+        final_path
+    )
+    print(f"Saved final checkpoint -> {final_path}")
     print("Training complete.")
-
 
 if __name__ == "__main__":
     main()
