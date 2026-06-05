@@ -15,28 +15,27 @@ from configs import Config
 from model import Qwen3DenseLM, Qwen3MOELM
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Train Qwen3 dense or MoE model")
+    parser = argparse.ArgumentParser(
+        description="Train Qwen3 Dense or MoE model"
+    )
 
     parser.add_argument(
         "--model",
         type=str,
         required=True,
-        choices=["dense", "moe"],
-        help="Choose which model to train"
+        choices=["dense", "moe"]
     )
 
     parser.add_argument(
         "--dataset",
         type=str,
-        default="neifuisan/Neuro-sama-QnA",
-        help="Hugging Face dataset name"
+        default="neifuisan/Neuro-sama-QnA"
     )
 
     parser.add_argument(
         "--tokenizer",
         type=str,
-        default="Qwen/Qwen2-0.5B",
-        help="Hugging Face tokenizer name"
+        default="Qwen/Qwen2-0.5B"
     )
 
     parser.add_argument(
@@ -46,27 +45,9 @@ def parse_args():
     )
 
     parser.add_argument(
-        "--batch_size",
-        type=int,
-        default=4
-    )
-
-    parser.add_argument(
-        "--lr",
-        type=float,
-        default=3e-4
-    )
-
-    parser.add_argument(
         "--save_dir",
         type=str,
         default="./checkpoints"
-    )
-
-    parser.add_argument(
-        "--max_seq_len",
-        type=int,
-        default=512
     )
 
     parser.add_argument(
@@ -79,12 +60,6 @@ def parse_args():
         "--seed",
         type=int,
         default=42
-    )
-
-    parser.add_argument(
-        "--num_workers",
-        type=int,
-        default=0
     )
 
     return parser.parse_args()
@@ -289,38 +264,46 @@ def main():
 
     train_split = split["train"]
     val_split = split["test"]
-
+    
     config = Config()
-    config.max_seq_len = args.max_seq_len
     config.vocab_size = tokenizer.vocab_size
 
     train_dataset = QnADataset(train_split)
     val_dataset = QnADataset(val_split)
-
+    
     train_loader = DataLoader(
-        train_dataset,
-        batch_size=args.batch_size,
-        shuffle=True,
-        num_workers=args.num_workers,
-        collate_fn=lambda batch: collate_fn(batch, tokenizer, config.max_seq_len)
-    )
+    train_dataset,
+    batch_size=config.batch_size,
+    shuffle=True,
+    num_workers=0,
+    collate_fn=lambda batch:
+        collate_fn(
+            batch,
+            tokenizer,
+            config.max_seq_len
+        )
+)
+
 
     val_loader = DataLoader(
-        val_dataset,
-        batch_size=args.batch_size,
-        shuffle=False,
-        num_workers=args.num_workers,
-        collate_fn=lambda batch: collate_fn(batch, tokenizer, config.max_seq_len)
-    )
+       val_dataset,batch_size=config.batch_size,
+    shuffle=False, num_workers=0,
+    collate_fn=lambda batch:
+        collate_fn(
+            batch,
+            tokenizer,
+            config.max_seq_len
+        )
+)
 
     print(f"Building {args.model} model...")
     model = build_model(args.model, config).to(device)
-
+    
     optimizer = AdamW(
-        model.parameters(),
-        lr=args.lr,
-        weight_decay=0.1
-    )
+    model.parameters(),
+    lr=0.1,
+    weight_decay=config.weight_decay
+)
 
     scaler = GradScaler("cuda") if device.type == "cuda" else None
 
