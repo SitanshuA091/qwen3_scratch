@@ -61,3 +61,22 @@ The MoE implementation includes:
 - Expert SwiGLU FFNs
 - Auxiliary Load Balancing Loss
 
+## Usage
+
+- Train the dense model:
+
+```bash
+python train.py --model dense
+```
+
+- Train the MoE model:
+
+```bash
+python train.py --model moe
+```
+- Train on a particular HF dataset
+```bash
+python train.py --model dense --dataset neifuisan/Neuro-sama-QnA
+```
+
+- Model architecture is defined in `model.py`, while hyperparameters and training configuration are managed through `configs.py`. 
