@@ -1,6 +1,6 @@
 import os
 import argparse
-from typing import Dict, Tuple, List, Optional
+from typing import Dict, Tuple, Optional
 
 import torch
 from torch.utils.data import Dataset, DataLoader
@@ -13,6 +13,7 @@ from tqdm import tqdm
 
 from configs import Config
 from model import Qwen3DenseLM, Qwen3MOELM
+
 
 def parse_args():
     parser = argparse.ArgumentParser(
@@ -62,6 +63,13 @@ def parse_args():
         default=42
     )
 
+    parser.add_argument(
+        "--resume",
+        type=str,
+        default=None,
+        help="Resume from checkpoint"
+    )
+
     return parser.parse_args()
 
 
@@ -73,6 +81,7 @@ def set_seed(seed: int = 42):
 
 
 def pick_text_fields(sample: Dict) -> Tuple[str, str]:
+
     instruction = str(sample.get("instruction", "")).strip()
     user_input = str(sample.get("input", "")).strip()
     output = str(sample.get("output", "")).strip()
@@ -94,13 +103,19 @@ def pick_text_fields(sample: Dict) -> Tuple[str, str]:
 
     return prompt, output
 
+
 class QnADataset(Dataset):
+
     def __init__(self, hf_dataset):
+
         self.examples = []
 
         for sample in hf_dataset:
+
             prompt, response = pick_text_fields(sample)
+
             if prompt and response:
+
                 self.examples.append(
                     {
                         "prompt": prompt,
@@ -116,6 +131,7 @@ class QnADataset(Dataset):
 
 
 def collate_fn(batch, tokenizer, max_seq_len):
+
     prompts = [item["prompt"] for item in batch]
     responses = [item["response"] for item in batch]
 
@@ -144,6 +160,7 @@ def collate_fn(batch, tokenizer, max_seq_len):
 
     input_ids = full_enc["input_ids"]
     attention_mask = full_enc["attention_mask"]
+
     labels = input_ids.clone()
 
     prompt_lengths = prompt_enc["attention_mask"].sum(dim=1)
@@ -158,104 +175,211 @@ def collate_fn(batch, tokenizer, max_seq_len):
         "attention_mask": attention_mask,
         "labels": labels
     }
-    
+
+
 def build_model(model_type: str, config: Config):
+
     if model_type == "dense":
         return Qwen3DenseLM(config)
+
     elif model_type == "moe":
         return Qwen3MOELM(config)
+
     else:
         raise ValueError(f"Unknown model type: {model_type}")
 
 
-def train_one_epoch(model, dataloader, optimizer, device, scaler=None, grad_clip=1.0):
+def train_one_epoch(
+    model,
+    dataloader,
+    optimizer,
+    device,
+    save_dir,
+    model_type,
+    epoch,
+    scaler=None,
+    grad_clip=1.0,
+    start_batch=0,
+):
+
     model.train()
+
     total_loss = 0.0
     total_aux = 0.0
 
-    progress_bar = tqdm(dataloader, desc="Training", leave=False)
+    progress_bar = tqdm(
+        dataloader,
+        desc=f"Epoch {epoch+1}",
+        leave=False
+    )
 
-    for batch in progress_bar:
+    for batch_idx, batch in enumerate(progress_bar):
+
+        if batch_idx < start_batch:
+            continue
+
         input_ids = batch["input_ids"].to(device)
         labels = batch["labels"].to(device)
 
         optimizer.zero_grad(set_to_none=True)
 
         if scaler is not None:
+
             with autocast(device_type="cuda", dtype=torch.float16):
-                outputs = model(input_ids=input_ids, labels=labels)
+
+                outputs = model(
+                    input_ids=input_ids,
+                    labels=labels
+                )
+
                 loss = outputs["loss"]
 
             scaler.scale(loss).backward()
+
             scaler.unscale_(optimizer)
-            torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
+
+            torch.nn.utils.clip_grad_norm_(
+                model.parameters(),
+                grad_clip
+            )
+
             scaler.step(optimizer)
             scaler.update()
+
         else:
-            outputs = model(input_ids=input_ids, labels=labels)
+
+            outputs = model(
+                input_ids=input_ids,
+                labels=labels
+            )
+
             loss = outputs["loss"]
+
             loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
+
+            torch.nn.utils.clip_grad_norm_(
+                model.parameters(),
+                grad_clip
+            )
+
             optimizer.step()
 
         total_loss += loss.item()
-        total_aux += float(outputs.get("aux_loss", 0.0))
 
-        progress_bar.set_postfix(loss=f"{loss.item():.4f}")
+        total_aux += float(
+            outputs.get("aux_loss", 0.0)
+        )
+
+        progress_bar.set_postfix(
+            loss=f"{loss.item():.4f}"
+        )
+
+        latest_checkpoint = os.path.join(
+            save_dir,
+            f"latest_{model_type}.pt"
+        )
+
+        torch.save(
+            {
+                "model_state_dict": model.state_dict(),
+                "optimizer_state_dict": optimizer.state_dict(),
+                "epoch": epoch,
+                "batch": batch_idx,
+            },
+            latest_checkpoint,
+        )
 
     avg_loss = total_loss / max(1, len(dataloader))
     avg_aux = total_aux / max(1, len(dataloader))
-    return avg_loss, avg_aux
 
+    return avg_loss, avg_aux
 
 @torch.no_grad()
 def evaluate(model, dataloader, device, scaler=None):
+
     model.eval()
+
     total_loss = 0.0
     total_aux = 0.0
 
-    for batch in tqdm(dataloader, desc="Validation", leave=False):
+    for batch in tqdm(
+        dataloader,
+        desc="Validation",
+        leave=False
+    ):
+
         input_ids = batch["input_ids"].to(device)
         labels = batch["labels"].to(device)
 
         if scaler is not None:
-            with autocast(device_type="cuda", dtype=torch.float16):
-                outputs = model(input_ids=input_ids, labels=labels)
+
+            with autocast(
+                device_type="cuda",
+                dtype=torch.float16
+            ):
+
+                outputs = model(
+                    input_ids=input_ids,
+                    labels=labels
+                )
+
                 loss = outputs["loss"]
+
         else:
-            outputs = model(input_ids=input_ids, labels=labels)
+
+            outputs = model(
+                input_ids=input_ids,
+                labels=labels
+            )
+
             loss = outputs["loss"]
 
         total_loss += loss.item()
-        total_aux += float(outputs.get("aux_loss", 0.0))
+
+        total_aux += float(
+            outputs.get("aux_loss", 0.0)
+        )
 
     avg_loss = total_loss / max(1, len(dataloader))
     avg_aux = total_aux / max(1, len(dataloader))
+
     return avg_loss, avg_aux
 
+
 def main():
+
     args = parse_args()
+
     set_seed(args.seed)
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    os.makedirs(args.save_dir, exist_ok=True)
+    device = torch.device(
+        "cuda" if torch.cuda.is_available() else "cpu"
+    )
+
+    os.makedirs(
+        args.save_dir,
+        exist_ok=True
+    )
 
     print("Loading tokenizer...")
-    tokenizer = AutoTokenizer.from_pretrained(args.tokenizer)
+
+    tokenizer = AutoTokenizer.from_pretrained(
+        args.tokenizer
+    )
 
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
     print("Loading dataset...")
+
     raw_dataset = load_dataset(args.dataset)
 
     if "train" not in raw_dataset:
-        raise ValueError("This script expects a train split in the dataset.")
+        raise ValueError(
+            "Dataset must contain a train split."
+        )
 
     full_train_split = raw_dataset["train"]
-
-    if len(full_train_split) < 2:
-        raise ValueError("Dataset too small to split into train/val.")
 
     split = full_train_split.train_test_split(
         test_size=args.val_split_ratio,
@@ -264,106 +388,231 @@ def main():
 
     train_split = split["train"]
     val_split = split["test"]
-    
+
     config = Config()
-    config.vocab_size = tokenizer.vocab_size
+
+    config.vocab_size = len(tokenizer)
 
     train_dataset = QnADataset(train_split)
     val_dataset = QnADataset(val_split)
-    
-    train_loader = DataLoader(
-    train_dataset,
-    batch_size=config.batch_size,
-    shuffle=True,
-    num_workers=0,
-    collate_fn=lambda batch:
-        collate_fn(
-            batch,
-            tokenizer,
-            config.max_seq_len
-        )
-)
 
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=config.batch_size,
+        shuffle=True,
+        num_workers=0,
+        collate_fn=lambda batch:
+            collate_fn(
+                batch,
+                tokenizer,
+                config.max_seq_len
+            )
+    )
 
     val_loader = DataLoader(
-       val_dataset,batch_size=config.batch_size,
-    shuffle=False, num_workers=0,
-    collate_fn=lambda batch:
-        collate_fn(
-            batch,
-            tokenizer,
-            config.max_seq_len
-        )
-)
+        val_dataset,
+        batch_size=config.batch_size,
+        shuffle=False,
+        num_workers=0,
+        collate_fn=lambda batch:
+            collate_fn(
+                batch,
+                tokenizer,
+                config.max_seq_len
+            )
+    )
 
     print(f"Building {args.model} model...")
-    model = build_model(args.model, config).to(device)
-    
+
+    model = build_model(
+        args.model,
+        config
+    ).to(device)
+
     optimizer = AdamW(
-    model.parameters(),
-    lr=0.1,
-    weight_decay=config.weight_decay
-)
+        model.parameters(),
+        lr=0.1,
+        weight_decay=config.weight_decay
+    )
 
-    scaler = GradScaler("cuda") if device.type == "cuda" else None
-
-    print(f"Training on {device}...")
+    scaler = (
+        GradScaler("cuda")
+        if device.type == "cuda"
+        else None
+    )
+    start_epoch = 0
+    start_batch = 0
     best_val_loss = float("inf")
 
-    for epoch in range(args.epochs):
-        train_loss, train_aux = train_one_epoch(
-            model=model,
-            dataloader=train_loader,
-            optimizer=optimizer,
-            device=device,
-            scaler=scaler,
-            grad_clip=1.0
+    if args.resume is not None:
+
+        print(
+            f"Loading checkpoint: {args.resume}"
+        )
+        checkpoint = torch.load(
+            args.resume,
+            map_location=device
+        )
+        model.load_state_dict(
+            checkpoint["model_state_dict"]
+        )
+        optimizer.load_state_dict(
+            checkpoint["optimizer_state_dict"]
+        )
+        start_epoch = checkpoint.get(
+            "epoch",
+            0
         )
 
-        val_loss, val_aux = evaluate(
-            model=model,
-            dataloader=val_loader,
-            device=device,
-            scaler=scaler
+        start_batch = checkpoint.get(
+            "batch",
+            0
+        ) + 1
+
+        best_val_loss = checkpoint.get(
+            "best_val_loss",
+            float("inf")
         )
 
         print(
-            f"Epoch {epoch + 1}/{args.epochs} | "
-            f"train_loss: {train_loss:.4f} | "
-            f"val_loss: {val_loss:.4f} | "
-            f"train_aux: {train_aux:.4f} | "
-            f"val_aux: {val_aux:.4f}"
+            f"Resuming from "
+            f"Epoch {start_epoch+1}, "
+            f"Batch {start_batch}"
         )
 
-        if val_loss < best_val_loss:
-            best_val_loss = val_loss
-            save_path = os.path.join(args.save_dir, f"best_{args.model}.pt")
+    print(f"Training on {device}...")
+    
+    try:
+
+        for epoch in range(start_epoch, args.epochs):
+
+            train_loss, train_aux = train_one_epoch(
+                model=model,
+                dataloader=train_loader,
+                optimizer=optimizer,
+                device=device,
+                save_dir=args.save_dir,
+                model_type=args.model,
+                epoch=epoch,
+                scaler=scaler,
+                grad_clip=1.0,
+                start_batch=start_batch if epoch == start_epoch else 0,
+            )
+
+            start_batch = 0
+
+            val_loss, val_aux = evaluate(
+                model=model,
+                dataloader=val_loader,
+                device=device,
+                scaler=scaler
+            )
+
+            print(
+                f"Epoch {epoch + 1}/{args.epochs} | "
+                f"train_loss: {train_loss:.4f} | "
+                f"val_loss: {val_loss:.4f} | "
+                f"train_aux: {train_aux:.4f} | "
+                f"val_aux: {val_aux:.4f}"
+            )
+
+            epoch_path = os.path.join(
+                args.save_dir,
+                f"epoch_{epoch+1}_{args.model}.pt"
+            )
+
             torch.save(
                 {
                     "model_state_dict": model.state_dict(),
+                    "optimizer_state_dict": optimizer.state_dict(),
                     "config": config,
                     "model_type": args.model,
                     "tokenizer": args.tokenizer,
                     "epoch": epoch + 1,
-                    "val_loss": val_loss
+                    "batch": 0,
+                    "best_val_loss": best_val_loss,
                 },
-                save_path
+                epoch_path,
             )
-            print(f"Saved best checkpoint -> {save_path}")
 
-    final_path = os.path.join(args.save_dir, f"final_{args.model}.pt")
+            print(f"Saved epoch checkpoint -> {epoch_path}")
+
+            if val_loss < best_val_loss:
+
+                best_val_loss = val_loss
+
+                best_path = os.path.join(
+                    args.save_dir,
+                    f"best_{args.model}.pt"
+                )
+
+                torch.save(
+                    {
+                        "model_state_dict": model.state_dict(),
+                        "optimizer_state_dict": optimizer.state_dict(),
+                        "config": config,
+                        "model_type": args.model,
+                        "tokenizer": args.tokenizer,
+                        "epoch": epoch + 1,
+                        "batch": 0,
+                        "val_loss": val_loss,
+                        "best_val_loss": best_val_loss,
+                    },
+                    best_path,
+                )
+
+                print(f"Saved best checkpoint -> {best_path}")
+
+    except KeyboardInterrupt:
+
+        interrupt_path = os.path.join(
+            args.save_dir,
+            f"interrupted_{args.model}.pt"
+        )
+
+        torch.save(
+            {
+                "model_state_dict": model.state_dict(),
+                "optimizer_state_dict": optimizer.state_dict(),
+                "config": config,
+                "model_type": args.model,
+                "tokenizer": args.tokenizer,
+                "epoch": epoch,
+                "batch": start_batch,
+                "best_val_loss": best_val_loss,
+            },
+            interrupt_path,
+        )
+
+        print(
+            f"\nTraining interrupted.\n"
+            f"Checkpoint saved to {interrupt_path}"
+        )
+
+        return
+
+    final_path = os.path.join(
+        args.save_dir,
+        f"final_{args.model}.pt"
+    )
+
     torch.save(
         {
             "model_state_dict": model.state_dict(),
+            "optimizer_state_dict": optimizer.state_dict(),
             "config": config,
             "model_type": args.model,
             "tokenizer": args.tokenizer,
-            "best_val_loss": best_val_loss
+            "best_val_loss": best_val_loss,
+            "epoch": args.epochs,
+            "batch": 0,
         },
-        final_path
+        final_path,
     )
+
     print(f"Saved final checkpoint -> {final_path}")
     print("Training complete.")
+
 
 if __name__ == "__main__":
     main()

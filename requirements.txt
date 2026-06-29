@@ -1,8 +1,6 @@
-torch
-numpy
-datasets
-tqdm
-transformers
-dataclasses
-typing
-ipykernel
+torch>=2.7.0
+numpy>=2.2.0
+datasets>=4.0.0
+tqdm>=4.67.1
+transformers>=4.52.0
+ipykernel>=6.29.5
