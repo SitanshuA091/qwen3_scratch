@@ -10,10 +10,10 @@ class Config:
     n_kv_heads: int = 4
 
     vocab_size: int = 32000
-    max_seq_len: int = 512
+    max_seq_len: int = 256
     sliding_window: int = 4096
 
-    batch_size: int = 24
+    batch_size: int = 2
     max_steps: int = 500
     gradient_accumulation_steps: int = 4
     weight_decay: float = 0.1
