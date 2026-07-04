@@ -8,22 +8,22 @@ class Config:
     n_layers: int = 6
     d_ff: int = 1536
     n_kv_heads: int = 4
+    epochs :int = 5
 
     vocab_size: int = 32000
     max_seq_len: int = 256
     sliding_window: int = 4096
 
     batch_size: int = 2
-    max_steps: int = 500
-    gradient_accumulation_steps: int = 4
     weight_decay: float = 0.1
     dropout: float = 0.1
-    grad_clip: float = 1.0
-    use_amp: bool = True
+    learning_rate: float = 1e-4
+    
 
     attn_bias: bool = False
     rms_norm_eps: float = 1e-6
     
+    #MOE specific configs
     n_experts: int = 128
     n_active_experts: int = 8
     moe_expert_hidden_dim: int = 1536
