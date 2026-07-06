@@ -178,6 +178,7 @@ def shift_inputs_and_labels(input_ids, labels):
     labels = labels[:, 1:]
     return input_ids, labels
     
+    
 class Qwen3DenseLM(nn.Module):
     def __init__(self, config: Config):
         super().__init__()
@@ -216,9 +217,8 @@ class Qwen3DenseLM(nn.Module):
         labels: Optional[torch.Tensor] = None
     ):
 
-        # Shift for next-token prediction
         if labels is not None:
-            input_ids, labels = shift_inputs_and_labels(input_ids)
+            input_ids, labels = shift_inputs_and_labels(input_ids, labels)
 
         x = self.token_embedding(input_ids)
         x = self.dropout(x)
