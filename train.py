@@ -170,6 +170,10 @@ def build_model(model_type: str, config: Config):
         raise ValueError(f"Unknown model type: {model_type}")
 
 
+import os
+import torch
+from tqdm import tqdm
+
 def train_one_epoch(
     model,
     dataloader,
@@ -178,38 +182,60 @@ def train_one_epoch(
     save_dir,
     model_type,
     epoch,
+    scheduler=None,
+    max_grad_norm=1.0,
 ):
-
     model.train()
+
     total_loss = 0.0
     total_aux = 0.0
+    total_tokens = 0
 
     progress_bar = tqdm(
         dataloader,
         desc=f"Epoch {epoch + 1}",
         leave=False,
     )
+
     for batch_idx, batch in enumerate(progress_bar):
         input_ids = batch["input_ids"].to(device)
         labels = batch["labels"].to(device)
 
-        optimizer.zero_grad()
+        optimizer.zero_grad(set_to_none=True)
+
         outputs = model(
             input_ids=input_ids,
             labels=labels,
         )
 
         loss = outputs["loss"]
-        loss.backward()
-        optimizer.step()
 
-        total_loss += loss.item()
-        total_aux += float(
-            outputs.get("aux_loss", 0.0)
+
+        loss.backward()
+
+        # gradient clipping 
+        torch.nn.utils.clip_grad_norm_(
+            model.parameters(),
+            max_grad_norm
         )
 
+        optimizer.step()
+
+        if scheduler is not None:
+            scheduler.step()
+
+        with torch.no_grad():
+            valid_tokens = (labels != -100).sum().item()
+
+        total_loss += loss.item() * valid_tokens
+        total_tokens += valid_tokens
+
+        total_aux += float(outputs.get("aux_loss", 0.0))
+
+        # progress bar (safe + meaningful)
         progress_bar.set_postfix(
-            loss=f"{loss.item():.4f}"
+            loss=f"{loss.item():.4f}",
+            tokens=valid_tokens
         )
 
         latest_checkpoint = os.path.join(
@@ -217,17 +243,16 @@ def train_one_epoch(
             f"latest_{model_type}.pt",
         )
 
-        torch.save(
-            {
-                "model_state_dict": model.state_dict(),
-                "optimizer_state_dict": optimizer.state_dict(),
-                "epoch": epoch,
-                "batch": batch_idx,
-            },
-            latest_checkpoint,
-        )
+    torch.save(
+        {
+            "model_state_dict": model.state_dict(),
+            "optimizer_state_dict": optimizer.state_dict(),
+            "epoch": epoch,
+        },
+        latest_checkpoint,
+    )
 
-    avg_loss = total_loss / max(1, len(dataloader))
+    avg_loss = total_loss / max(1, total_tokens)
     avg_aux = total_aux / max(1, len(dataloader))
 
     return avg_loss, avg_aux
@@ -238,30 +263,35 @@ def evaluate(
     dataloader,
     device,
 ):
-
     model.eval()
+
     total_loss = 0.0
     total_aux = 0.0
+    total_tokens = 0
 
-    for batch in tqdm(
-        dataloader,
-        desc="Validation",
-        leave=False,
-    ):
-        input_ids = batch["input_ids"].to(device)
-        labels = batch["labels"].to(device)
+    with torch.no_grad():
+        for batch in tqdm(
+            dataloader,
+            desc="Validation",
+            leave=False,
+        ):
+            input_ids = batch["input_ids"].to(device)
+            labels = batch["labels"].to(device)
 
-        outputs = model(
-            input_ids=input_ids,
-            labels=labels,
-        )
+            outputs = model(
+                input_ids=input_ids,
+                labels=labels,
+            )
 
-        loss = outputs["loss"]
-        total_loss += loss.item()
-        total_aux += float(
-            outputs.get("aux_loss", 0.0)
-        )
-    avg_loss = total_loss / max(1, len(dataloader))
+            loss = outputs["loss"]
+            valid_tokens = (labels != -100).sum().item()
+
+            total_loss += loss.item() * valid_tokens
+            total_tokens += valid_tokens
+
+            total_aux += float(outputs.get("aux_loss", 0.0))
+
+    avg_loss = total_loss / max(1, total_tokens)
     avg_aux = total_aux / max(1, len(dataloader))
 
     return avg_loss, avg_aux
