@@ -17,7 +17,7 @@ class Config:
     batch_size: int = 2
     weight_decay: float = 0.1
     dropout: float = 0.1
-    learning_rate: float = 1e-4
+    learning_rate: float = 1e-5
     
 
     attn_bias: bool = False
