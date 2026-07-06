@@ -12,7 +12,7 @@ The implementations are a scaled-down version inspired by the Qwen3-1.7B dense m
 - RMSNorm
 - SwiGLU Feed Forward Network
 - Causal Self Attention
-- Residual Connections
+- Residual Connections inside transformer blocks
 - Weight Tied LM Head
 - Decoder-only Causal Language Modeling
 

@@ -151,7 +151,6 @@ def collate_fn(batch, tokenizer, max_seq_len):
         labels[i, :prompt_len] = -100
 
     labels[attention_mask == 0] = -100
-
     return {
         "input_ids": input_ids,
         "attention_mask": attention_mask,

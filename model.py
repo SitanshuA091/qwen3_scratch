@@ -23,7 +23,7 @@ import os
 class TokenEmbedding(nn.Module):
     def __init__(self, vocab_size: int, d_model: int):
         super().__init__()
-        self.embedding = nn.Embedding(vocab_size, d_model)
+        self.embedding = nn.Embedding(Config.vocab_size, Config.d_model)
 
     def forward(self, input_ids: torch.Tensor) -> torch.Tensor:
         return self.embedding(input_ids)
@@ -51,9 +51,14 @@ class Rotary(nn.Module):
         self.register_buffer("sin", emb.sin(), persistent=False)
 
     @staticmethod
-    def rotate_half(x: torch.Tensor) -> torch.Tensor:
-        x1, x2 = x.chunk(2, dim=-1)
-        return torch.cat((-x2, x1), dim=-1)
+    def rotate_half(x):
+        x = x.reshape(*x.shape[:-1], -1, 2)
+        x1 = x[..., 0]
+        x2 = x[..., 1]
+        x = torch.stack(
+            (-x2, x1), dim=-1
+            )
+        return x.flatten(-2)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         seq_len = x.size(-2)
@@ -168,6 +173,11 @@ class TransformerBlock(nn.Module):
 
         return x
     
+def shift_inputs_and_labels(input_ids, labels):
+    input_ids = input_ids[:, :-1]
+    labels = labels[:, 1:]
+    return input_ids, labels
+    
 class Qwen3DenseLM(nn.Module):
     def __init__(self, config: Config):
         super().__init__()
@@ -183,7 +193,7 @@ class Qwen3DenseLM(nn.Module):
             TransformerBlock(config)
             for _ in range(config.n_layers)
         ])
-        
+
         self.final_norm = nn.RMSNorm(
             config.d_model,
             eps=config.rms_norm_eps
@@ -195,6 +205,7 @@ class Qwen3DenseLM(nn.Module):
             bias=False
         )
 
+        # weight tying
         self.lm_head.weight = self.token_embedding.weight
 
         self.dropout = nn.Dropout(config.dropout)
@@ -204,7 +215,10 @@ class Qwen3DenseLM(nn.Module):
         input_ids: torch.Tensor,
         labels: Optional[torch.Tensor] = None
     ):
-       
+
+        # Shift for next-token prediction
+        if labels is not None:
+            input_ids, labels = shift_inputs_and_labels(input_ids)
 
         x = self.token_embedding(input_ids)
         x = self.dropout(x)
@@ -221,7 +235,8 @@ class Qwen3DenseLM(nn.Module):
         if labels is not None:
             loss = F.cross_entropy(
                 logits.reshape(-1, logits.size(-1)),
-                labels.reshape(-1)
+                labels.reshape(-1),
+                ignore_index=-100
             )
 
         return {
@@ -229,10 +244,6 @@ class Qwen3DenseLM(nn.Module):
             "loss": loss
         }
         
-def shift_inputs_and_labels(input_ids):
-    x = input_ids[:, :-1]
-    y = input_ids[:, 1:]
-    return x, y
 
 class MoELayer(nn.Module):
     def __init__(self, config):
