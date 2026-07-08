@@ -24,11 +24,11 @@ class Config:
     rms_norm_eps: float = 1e-6
     
     #MOE specific configs
-    n_experts: int = 128
-    n_active_experts: int = 8
+    n_experts: int = 16
+    n_active_experts: int = 2
     moe_expert_hidden_dim: int = 1536
     moe_aux_loss_coef: float = 0.01
-    tie_embeddings: bool = False
+    tie_embeddings: bool = True
 
     def __post_init__(self):
         assert self.d_model % self.n_heads == 0
