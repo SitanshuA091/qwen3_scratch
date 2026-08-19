@@ -533,8 +533,7 @@ def main():
     plot_training_curves(
         train_history,
         val_history,
-        save_dir,
-        args.model
+        save_dir
     )
 
 if __name__ == "__main__":
