@@ -13,6 +13,7 @@ from tqdm import tqdm
 
 from configs import Config
 from model import Qwen3DenseLM, Qwen3MOELM
+from utils import plot_training_curves
 
 QWEN_TOKENIZER = "Qwen/Qwen2-1.5B"
 
@@ -229,10 +230,9 @@ def train_one_epoch(
 
         total_loss += loss.item() * valid_tokens
         total_tokens += valid_tokens
+        
+        total_aux += outputs.get("aux_loss", torch.tensor(0.0)).detach().item()
 
-        total_aux += float(outputs.get("aux_loss", 0.0))
-
-        # progress bar (safe + meaningful)
         progress_bar.set_postfix(
             loss=f"{loss.item():.4f}",
             tokens=valid_tokens
@@ -433,6 +433,11 @@ def main():
         print(
             f"Resuming from Epoch {start_epoch + 1}"
         )
+        
+    train_history = []
+    val_history = []
+    train_aux_history = []
+    val_aux_history = []
 
     print(
         f"Training on {device}..."
@@ -459,6 +464,11 @@ def main():
                 dataloader=val_loader,
                 device=device,
             )
+            
+            train_history.append(train_loss)
+            val_history.append(val_loss)
+            train_aux_history.append(train_aux)
+            val_aux_history.append(val_aux)
 
             print(
                 f"Epoch {epoch + 1}/{config.epochs} | "
@@ -537,6 +547,13 @@ def main():
         f"Saved final checkpoint -> {final_path}"
     )
     print("Training complete.")
+    
+    plot_training_curves(
+    train_history,
+    val_history,
+    save_dir,
+    args.model
+)
 
 
 if __name__ == "__main__":
