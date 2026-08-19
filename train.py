@@ -238,20 +238,6 @@ def train_one_epoch(
             tokens=valid_tokens
         )
 
-        latest_checkpoint = os.path.join(
-            save_dir,
-            f"latest_{model_type}.pt",
-        )
-
-    torch.save(
-        {
-            "model_state_dict": model.state_dict(),
-            "optimizer_state_dict": optimizer.state_dict(),
-            "epoch": epoch,
-        },
-        latest_checkpoint,
-    )
-
     avg_loss = total_loss / max(1, total_tokens)
     avg_aux = total_aux / max(1, len(dataloader))
 
@@ -400,6 +386,8 @@ def main():
 
     start_epoch = 0
     best_val_loss = float("inf")
+    best_model_state = None
+    best_epoch = 0
 
     if args.resume is not None:
 
@@ -433,15 +421,18 @@ def main():
         print(
             f"Resuming from Epoch {start_epoch + 1}"
         )
-        
+
+
     train_history = []
     val_history = []
     train_aux_history = []
     val_aux_history = []
 
+
     print(
         f"Training on {device}..."
     )
+
     try:
 
         for epoch in range(
@@ -459,16 +450,20 @@ def main():
                 epoch=epoch,
             )
 
+
             val_loss, val_aux = evaluate(
                 model=model,
                 dataloader=val_loader,
                 device=device,
             )
-            
+
+
+
             train_history.append(train_loss)
             val_history.append(val_loss)
             train_aux_history.append(train_aux)
             val_aux_history.append(val_aux)
+
 
             print(
                 f"Epoch {epoch + 1}/{config.epochs} | "
@@ -478,60 +473,35 @@ def main():
                 f"val_aux: {val_aux:.4f}"
             )
 
-            epoch_path = os.path.join(
-                save_dir,
-                f"epoch_{epoch + 1}_{args.model}.pt"
-            )
-
-            torch.save(
-                {
-                    "model_state_dict": model.state_dict(),
-                    "optimizer_state_dict": optimizer.state_dict(),
-                    "config": config,
-                    "model_type": args.model,
-                    "epoch": epoch + 1,
-                    "best_val_loss": best_val_loss,
-                },
-                epoch_path,
-            )
-
-            print(
-                f"Saved epoch checkpoint -> {epoch_path}"
-            )
 
             if val_loss < best_val_loss:
 
                 best_val_loss = val_loss
+                best_epoch = epoch + 1
 
-                best_path = os.path.join(
-                    save_dir,
-                    f"best_{args.model}.pt"
-                )
+                best_model_state = {
+                    k: v.cpu().clone()
+                    for k, v in model.state_dict().items()
+                }
 
-                torch.save(
-                    {
-                        "model_state_dict": model.state_dict(),
-                        "optimizer_state_dict": optimizer.state_dict(),
-                        "config": config,
-                        "model_type": args.model,
-                        "epoch": epoch + 1,
-                        "val_loss": val_loss,
-                        "best_val_loss": best_val_loss,
-                    },
-                    best_path,
-                )
-
-                print(
-                    f"Saved best checkpoint -> {best_path}"
-                )
 
     except KeyboardInterrupt:
         print("\nTraining interrupted.")
         return
+
+
+    if best_model_state is not None:
+        model.load_state_dict(
+            best_model_state
+        )
+
+
     final_path = os.path.join(
         save_dir,
-        f"final_{args.model}.pt"
+        f"best_final_{args.model}.pt"
     )
+
+
     torch.save(
         {
             "model_state_dict": model.state_dict(),
@@ -539,22 +509,33 @@ def main():
             "config": config,
             "model_type": args.model,
             "epoch": config.epochs,
+            "best_epoch": best_epoch,
             "best_val_loss": best_val_loss,
         },
         final_path,
     )
+
+
     print(
         f"Saved final checkpoint -> {final_path}"
     )
-    print("Training complete.")
-    
-    plot_training_curves(
-    train_history,
-    val_history,
-    save_dir,
-    args.model
-)
 
+    print(
+        f"Best validation loss: {best_val_loss:.4f} "
+        f"at epoch {best_epoch}"
+    )
+
+
+    print("Training complete.")
+
+
+    # Plot after training finishes
+    plot_training_curves(
+        train_history,
+        val_history,
+        save_dir,
+        args.model
+    )
 
 if __name__ == "__main__":
     main()
