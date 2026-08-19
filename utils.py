@@ -34,4 +34,4 @@ def plot_training_curves(
         bbox_inches="tight"
     )
 
-    plt.close()
+    plt.show()
