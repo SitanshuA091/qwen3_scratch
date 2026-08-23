@@ -61,6 +61,16 @@ The MoE implementation includes:
 - Expert SwiGLU FFNs
 - Auxiliary Load Balancing Loss
 
+## Training Results and Comparisons
+
+Training and Validation loss Results on a HF Qna dataset - neifuisan/Neuro-sama-QnA ~ 500 examples
+
+- **Dense Model** Loss curves over training lasting 5 epochs
+<img width="397.5" height="235" alt="image" src="https://github.com/user-attachments/assets/9216c125-3bd6-43d6-bc98-671afa4ab6e2" />
+
+- **MOE Model** Loss curves over training lasting 5 epochs
+<img width="397.5" height="235" alt="image" src="https://github.com/user-attachments/assets/d2f7e8f5-1d62-4771-971c-d5126e97c995" />
+
 ## Usage
 
 - Train the dense model:
