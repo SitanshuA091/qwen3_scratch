@@ -28,12 +28,11 @@ def parse_args():
         required=True,
         choices=["dense", "moe"]
     )
-
     parser.add_argument(
-        "--dataset",
-        type=str,
-        default="neifuisan/Neuro-sama-QnA",
-        required = False
+    "--dataset",
+    type=str,
+    default="roneneldan/TinyStories",
+    required=False
     )
     
     parser.add_argument(
@@ -51,61 +50,18 @@ def set_seed(seed: int = 42):
     torch.backends.cudnn.deterministic = True #choses deterministic algo from the pytorch cudnn so that result of every run is same
     torch.backends.cudnn.benchmark = False #keep reproducability and chose same algo for any input shape in any layer
 
-
-def pick_text_fields(sample: Dict) -> Tuple[str, str]:
-
-    instruction = str(sample.get("instruction", "")).strip()
-    user_input = str(sample.get("input", "")).strip()
-    output = str(sample.get("output", "")).strip()
-
-    if not output:
-        return "", ""
-
-    if instruction:
-
-        if user_input:
-            prompt = (
-                f"### Instruction:\n{instruction}\n\n"
-                f"### Input:\n{user_input}\n\n"
-                f"### Response:\n"
-            )
-        else:
-            prompt = (
-                f"### Instruction:\n{instruction}\n\n"
-                f"### Response:\n"
-            )
-
-    elif user_input:
-
-        prompt = (
-            f"### Input:\n{user_input}\n\n"
-            f"### Response:\n"
-        )
-
-    else:
-        return "", ""
-
-    return prompt, output
-
-
-class QnADataset(Dataset):
+class TextDataset(Dataset):
 
     def __init__(self, hf_dataset):
 
         self.examples = []
 
         for sample in hf_dataset:
+            text = sample["text"].strip()
 
-            prompt, response = pick_text_fields(sample)
-            
-            if not prompt or not response:
-                continue
-            self.examples.append(
-                {
-                    "prompt": prompt,
-                    "response": response
-                    }
-                )
+            if text:
+                self.examples.append(text)
+
     def __len__(self):
         return len(self.examples)
 
@@ -115,49 +71,26 @@ class QnADataset(Dataset):
 
 def collate_fn(batch, tokenizer, max_seq_len):
 
-    prompts = [item["prompt"] for item in batch]
-    responses = [item["response"] for item in batch]
-
-    eos = tokenizer.eos_token if tokenizer.eos_token is not None else ""
-
-    full_texts = [
-        prompt + response + eos
-        for prompt, response in zip(prompts, responses)
-    ]
-
-    full_enc = tokenizer(
-        full_texts,
+    encodings = tokenizer(
+        batch,
         truncation=True,
         max_length=max_seq_len,
         padding=True,
         return_tensors="pt"
     )
 
-    prompt_enc = tokenizer(
-        prompts,
-        truncation=True,
-        max_length=max_seq_len,
-        padding=True,
-        return_tensors="pt"
-    )
-
-    input_ids = full_enc["input_ids"]
-    attention_mask = full_enc["attention_mask"]
+    input_ids = encodings["input_ids"]
+    attention_mask = encodings["attention_mask"]
 
     labels = input_ids.clone()
 
-    prompt_lengths = prompt_enc["attention_mask"].sum(dim=1)
-
-    for i, prompt_len in enumerate(prompt_lengths):
-        labels[i, :prompt_len] = -100
-
     labels[attention_mask == 0] = -100
+
     return {
         "input_ids": input_ids,
         "attention_mask": attention_mask,
         "labels": labels
     }
-
 
 def build_model(model_type: str, config: Config):
 
@@ -169,11 +102,6 @@ def build_model(model_type: str, config: Config):
 
     else:
         raise ValueError(f"Unknown model type: {model_type}")
-
-
-import os
-import torch
-from tqdm import tqdm
 
 def train_one_epoch(
     model,
@@ -320,26 +248,19 @@ def main():
         raise ValueError(
             "Dataset must contain a train split."
         )
-
-    full_train_split = raw_dataset["train"]
-
-    split = full_train_split.train_test_split(
-        test_size=0.1,
-        seed=42
-    )
-
-    train_split = split["train"]
-    val_split = split["test"]
+        
+    train_split = raw_dataset["train"]
+    val_split = raw_dataset["validation"]
 
     config = Config()
 
     config.vocab_size = len(tokenizer)
 
-    train_dataset = QnADataset(
+    train_dataset = TextDataset(
         train_split
     )
 
-    val_dataset = QnADataset(
+    val_dataset = TextDataset(
         val_split
     )
 
