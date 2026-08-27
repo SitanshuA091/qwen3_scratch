@@ -241,15 +241,15 @@ def main():
     print("Loading dataset...")
 
     raw_dataset = load_dataset(
-        args.datasetsplit={
+    args.dataset,
+    split={
         "train": "train[:10000]",
         "validation": "validation[:1000]"
     }
     )
-
     if "train" not in raw_dataset:
         raise ValueError(
-            "Dataset must contain a train split."
+        "Dataset must contain a train split."
         )
         
     train_split = raw_dataset["train"]
