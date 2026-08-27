@@ -8,13 +8,13 @@ class Config:
     n_layers: int = 6
     d_ff: int = 1536
     n_kv_heads: int = 4
-    epochs :int = 5
+    epochs :int = 3
 
     vocab_size: int = 32000
     max_seq_len: int = 256
     sliding_window: int = 4096
 
-    batch_size: int = 2
+    batch_size: int = 4
     weight_decay: float = 0.1
     dropout: float = 0.1
     learning_rate: float = 1e-4
