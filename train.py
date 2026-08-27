@@ -453,11 +453,11 @@ def main():
     print("Training complete.")
 
 
-    # Plot after training finishes
     plot_training_curves(
-        train_history,
-        val_history,
-        save_dir
+    train_history,
+    val_history,
+    save_dir,
+    args.model
     )
 
 if __name__ == "__main__":
