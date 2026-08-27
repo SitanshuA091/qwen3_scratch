@@ -1,6 +1,6 @@
-# Qwen3 From Scratch
+# Tiny-Qwen
 
-A simplified PyTorch implementation of Qwen3 Dense and Qwen3 MoE style language models.
+A simplified PyTorch implementation of Qwen-3 Dense and Qwen3 MoE language models.
 
 The implementations are a scaled-down version inspired by the Qwen3-1.7B dense model and the Qwen3-30B-A3B MOE model
 
