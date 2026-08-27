@@ -70,6 +70,16 @@ Training and Validation loss Results on a HF Qna dataset - neifuisan/Neuro-sama-
 
 - **MOE Model** Loss curves over training lasting 5 epochs
 <img width="397.5" height="235" alt="image" src="https://github.com/user-attachments/assets/d2f7e8f5-1d62-4771-971c-d5126e97c995" />
+
+Training and Validation loss Results on a subset of the roneneldan/TinyStories dataset ~ 10000 samples
+
+- **Dense Model** Loss curves over training lasting 3 epochs
+<img width="393" height="235" alt="image" src="https://github.com/user-attachments/assets/8f78e446-fb5d-4357-befa-70d450daa85e" />
+
+-  **MOE Model** Loss curves over training lasting 3 epochs
+<img width="393" height="235" alt="image" src="https://github.com/user-attachments/assets/c65dff2d-ad49-4719-a754-da969507fbfa" />
+
+
 ## Usage
 
 - Train the dense model:
