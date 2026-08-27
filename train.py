@@ -241,7 +241,10 @@ def main():
     print("Loading dataset...")
 
     raw_dataset = load_dataset(
-        args.dataset
+        args.datasetsplit={
+        "train": "train[:10000]",
+        "validation": "validation[:1000]"
+    }
     )
 
     if "train" not in raw_dataset:
